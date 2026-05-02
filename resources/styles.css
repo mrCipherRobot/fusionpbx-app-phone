@@ -803,3 +803,37 @@ body.audio_call_mode #active .dialpad_wrapper {
 	display: none; /* Hide header in conversation view */
 }
 
+/* DTMF Keypad Panel - shown during active calls */
+#dtmf_keypad {
+	position: fixed;
+	top: 0;
+	bottom: 38px;
+	left: 0;
+	right: 0;
+	background: rgba(0, 0, 0, 0.8);
+	display: none;
+	flex-direction: column;
+	align-items: center;
+	padding: 20px;
+	z-index: 1500;
+}
+
+/* DTMF destination display - matches the destination input styling */
+.dtmf_destination {
+	font-size: 45px;
+	font-weight: bold;
+	min-height: 10%;
+	width: 100%;
+	max-width: 300px;
+	text-align: center;
+}
+
+/* DTMF key animation and visual feedback */
+.dialpad_box.dtmf_digit {
+	transition: background 0.15s, transform 0.05s;
+}
+
+.dialpad_box.dtmf_digit:active,
+.dialpad_box.dtmf_digit.dtmf_pressed {
+	background: #1eba00;
+	transform: scale(0.95);

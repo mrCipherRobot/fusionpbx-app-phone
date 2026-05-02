@@ -225,6 +225,29 @@ echo "			<div class='dialpad_box' id='unmute_video' style='display: none;' oncli
 echo "		</div>\n";
 echo "	</div>\n";
 
+//define the DTMF keypad panel - shown during active calls for sending DTMF
+echo "	<div class='dialpad' id='dtmf_keypad' style='display: none;'>\n";
+echo "		<div class='keypad_header'><i class='fas fa-keyboard'></i> Keypad</div>\n";
+echo "		<input type='text' class='destination dtmf_destination' id='dtmf_destination' readonly />\n";
+echo "		<div class='dialpad_wrapper keypad_3col'>\n";
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"1\");'><strong>1</strong><br><sup>&nbsp;</sup></div>\n";
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"2\");'><strong>2</strong><br><sup>ABC</sup></div>\n";
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"3\");'><strong>3</strong><br><sup>DEF</sup></div>\n";
+
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"4\");'><strong>4</strong><br><sup>GHI</sup></div>\n";
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"5\");'><strong>5</strong><br><sup>JKL</sup></div>\n";
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"6\");'><strong>6</strong><br><sup>MNO</sup></div>\n";
+
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"7\");'><strong>7</strong><br><sup>PQRS</sup></div>\n";
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"8\");'><strong>8</strong><br><sup>TUV</sup></div>\n";
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"9\");'><strong>9</strong><br><sup>WXYZ</sup></div>\n";
+
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"*\");' style='margin-bottom: 8px; padding-top: 20px; padding-bottom: 0;'><strong>*</strong></div>\n";
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"0\");' style='margin-bottom: 8px; padding-top: 15px; padding-bottom: 5px;'><strong>0</strong></div>\n";
+echo "			<div class='dialpad_box dtmf_digit' onclick='send_dtmf(\"#\");' style='margin-bottom: 8px; padding-top: 15px; padding-bottom: 5px;'><strong>#</strong></div>\n";
+echo "		</div>\n";
+echo "	</div>\n";
+
 //define the action bar
 echo "	<div class='action_bar' id='action_bar'>\n";
 echo "		<div class='action_item' onclick='show_dialpad();' id='action_keypad'><i class='fas fa-phone-alt'></i>\n";

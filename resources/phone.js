@@ -200,6 +200,10 @@ let active_call_display_name = '';
 let active_call_number = '';
 let current_history_entry_id = null;  // Track current call's history entry for duration update
 let current_conversation_partner = null;  // Current active conversation partner
+let dtmf_keypad_shown = false;  // Track if DTMF keypad is visible
+let dtmf_display_timer = null;  // Timer for clearing DTMF display
+let dtmf_flush_timer = null;  // Timer for auto-flushing DTMF buffer
+let dtmf_buffer = '';  // Buffer for DTMF digits (to send as batch)
 
 function stop_call_tone() {
 	const ringtone = document.getElementById('ringtone');
@@ -375,6 +379,9 @@ function set_call_action_mode(enabled, use_video) {
 	var action_hold = document.getElementById('action_hold');
 	var action_video_mute = document.getElementById('action_video_mute');
 	var action_transfer = document.getElementById('action_transfer');
+	var action_keypad = document.getElementById('action_keypad');
+	var action_keypad_during_call = document.getElementById('action_keypad_during_call');
+	
 	if (action_mute) {
 		action_mute.style.display = enabled ? 'flex' : 'none';
 	}
@@ -386,6 +393,13 @@ function set_call_action_mode(enabled, use_video) {
 	}
 	if (action_transfer) {
 		action_transfer.style.display = enabled ? 'flex' : 'none';
+	}
+	// Toggle dialpad icon (shown when not in call) vs keypad icon (shown during call)
+	if (action_keypad) {
+		action_keypad.style.display = enabled ? 'none' : 'flex';
+	}
+	if (action_keypad_during_call) {
+		action_keypad_during_call.style.display = enabled ? 'flex' : 'none';
 	}
 
 	if (enabled) {
@@ -572,6 +586,17 @@ function reset_call_ui_state(show_dialpad) {
 	document.getElementById('dialpad').style.display = show_dialpad ? "grid" : "none";
 	document.getElementById('ringing').style.display = "none";
 	document.getElementById('active').style.display = "none";
+	document.getElementById('dtmf_keypad').style.display = "none";
+	dtmf_keypad_shown = false;
+	if (dtmf_display_timer) {
+		clearTimeout(dtmf_display_timer);
+		dtmf_display_timer = null;
+	}
+	if (dtmf_flush_timer) {
+		clearTimeout(dtmf_flush_timer);
+		dtmf_flush_timer = null;
+	}
+	dtmf_buffer = '';  // Clear any pending DTMF buffer
 
 	document.getElementById('answer_audio').style.display = "none";
 	document.getElementById('answer_video').style.display = "none";
@@ -782,6 +807,8 @@ function get_media_options(use_video) {
 				remote: document.getElementById('remote_video'),
 				local: document.getElementById('local_video')
 			},
+			autoAnswer: true,  // Allow remote media to play (including ringback)
+			autoAccept: false,  // Don't auto-accept the call
 			RTCConstraints: {
 				"optional": [{ 'DtlsSrtpKeyAgreement': 'true'} ]
 			}
@@ -969,6 +996,8 @@ function answer_call(use_video) {
 				remote: document.getElementById('remote_video'),
 				local: document.getElementById('local_video')
 			},
+			autoAnswer: true,  // Allow remote media to play (including ringback)
+			autoAccept: false,  // Don't auto-accept the call
 			RTCConstraints: {
 				"optional": [{ 'DtlsSrtpKeyAgreement': 'true'} ]
 			}
@@ -1024,20 +1053,31 @@ function pad(number, length) {
 
 // Navigation functions to show different panels
 function hide_all_panels() {
-	document.getElementById('dialpad').style.display = 'none';
-	//document.getElementById('keypad').style.display = 'none';
-	document.getElementById('contacts').style.display = 'none';
-	document.getElementById('history').style.display = 'none';
-	document.getElementById('messages').style.display = 'none';
-	document.getElementById('conversation').style.display = 'none';
-	document.getElementById('ringing').style.display = 'none';
-	document.getElementById('active').style.display = 'none';
+  document.getElementById('dialpad').style.display = 'none';
+  //document.getElementById('keypad').style.display = 'none';
+  document.getElementById('contacts').style.display = 'none';
+  document.getElementById('history').style.display = 'none';
+  document.getElementById('messages').style.display = 'none';
+  document.getElementById('conversation').style.display = 'none';
+  document.getElementById('ringing').style.display = 'none';
+  document.getElementById('active').style.display = 'none';
+  document.getElementById('dtmf_keypad').style.display = 'none';
+  dtmf_keypad_shown = false;
 }
 
 function show_dialpad() {
-	hide_all_panels();
-	document.getElementById('dialpad').style.display = 'grid';
-	update_action_bar_state('dialpad');
+  // Check if dialpad is currently shown (and not in a call)
+  var dialpad = document.getElementById('dialpad');
+  if (dialpad.style.display === 'grid' && !is_session_active()) {
+    // Hide the dialpad
+    dialpad.style.display = 'none';
+    document.getElementById('action_keypad').classList.remove('active');
+  } else {
+    // Show the dialpad
+    hide_all_panels();
+    dialpad.style.display = 'grid';
+    update_action_bar_state('dialpad');
+  }
 }
 
 function show_contacts() {
@@ -1604,10 +1644,6 @@ function correct_alignment() {
 function digit_add($digit) {
 	document.getElementById('destination').value = document.getElementById('destination').value + $digit;
 	correct_alignment();
-	// Send DTMF if in an active call
-	if (session && !session_hungup && (session.status === SIP.Session.C.STATUS_CONFIRMED || session.status === SIP.Session.C.STATUS_ANSWERED)) {
-		session.sendDTMF($digit);
-	}
 }
 
 function digit_delete() {
@@ -1621,11 +1657,178 @@ function digit_clear() {
 	correct_alignment();
 }
 
+// Show DTMF keypad during active call
+function show_dtmf_keypad() {
+	if (!is_session_active()) {
+		return;
+	}
+	
+	hide_all_panels();
+	document.getElementById('dtmf_keypad').style.display = 'flex';
+	document.getElementById('dtmf_destination').value = '';
+	dtmf_keypad_shown = true;
+}
+
+// Toggle DTMF keypad during active call - shows it if hidden, hides it if shown
+function show_keypad() {
+	if (!is_session_active()) {
+		return;
+	}
+	
+	var dtmf_keypad = document.getElementById('dtmf_keypad');
+	
+	if (dtmf_keypad_shown && dtmf_keypad.style.display === 'flex') {
+		// Hide DTMF keypad, show active call panel
+		dtmf_keypad.style.display = 'none';
+		dtmf_keypad_shown = false;
+		document.getElementById('active').style.display = 'grid';
+		
+		// Switch action bar icons back to dialpad
+		document.getElementById('action_keypad').style.display = 'flex';
+		document.getElementById('action_keypad_during_call').style.display = 'none';
+	} else {
+		// Show DTMF keypad
+		show_dtmf_keypad();
+	}
+}
+
+// Send DTMF digit through active SIP session (with buffering to beat FreeSWITCH inter-digit timeout)
+function send_dtmf(digit) {
+	if (!session || session_hungup) {
+		return;
+	}
+	
+	// Check if session is in CONFIRMED or ANSWERED state
+	if (session.status !== SIP.Session.C.STATUS_CONFIRMED && session.status !== SIP.Session.C.STATUS_ANSWERED) {
+		return;
+	}
+	
+	// Add digit to buffer
+	dtmf_buffer += digit;
+	console.log('send_dtmf: Buffered digit:', digit, '| Buffer:', dtmf_buffer);
+	
+	// Visual feedback: add digit to display
+	var display = document.getElementById('dtmf_destination');
+	if (display) {
+		display.value += digit;
+	}
+	
+	// Highlight pressed key
+	var keys = document.querySelectorAll('.dialpad_box.dtmf_digit');
+	keys.forEach(function(key) {
+		var strong = key.querySelector('strong');
+		if (strong && strong.textContent === digit) {
+			key.classList.add('dtmf_pressed');
+			setTimeout(function() { key.classList.remove('dtmf_pressed'); }, 150);
+		}
+	});
+	
+	// Auto-flush buffer after 2000ms of inactivity (user has 2 seconds to enter digits)
+	if (dtmf_flush_timer) {
+		clearTimeout(dtmf_flush_timer);
+	}
+	dtmf_flush_timer = setTimeout(function() {
+		console.log('send_dtmf: Auto-flushing buffer:', dtmf_buffer);
+		flush_dtmf_buffer();
+	}, 2000);
+}
+
+// Clear the display after a short delay (visual feedback cleanup)
+function clear_dtmf_display() {
+	var display = document.getElementById('dtmf_destination');
+	if (display) {
+		display.value = '';
+	}
+}
+
+// Flush the DTMF buffer - send ALL digits as a single sequence via SIP INFO
+function flush_dtmf_buffer() {
+	if (!dtmf_buffer || !session || session_hungup) {
+		return;
+	}
+	
+	// Ensure session is still active
+	if (session.status !== SIP.Session.C.STATUS_CONFIRMED && session.status !== SIP.Session.C.STATUS_ANSWERED) {
+		dtmf_buffer = '';
+		return;
+	}
+	
+	var digits = dtmf_buffer;
+	dtmf_buffer = '';  // Clear buffer immediately
+	
+	console.log('flush_dtmf_buffer: Sending FULL sequence:', digits);
+	
+	// Clear display after a short delay so user can see what they entered
+	var display = document.getElementById('dtmf_destination');
+	if (display) {
+		setTimeout(function() {
+			if (display) {
+				display.value = '';
+			}
+		}, 500);
+	}
+	
+	// Check if RFC 2833 is available
+	var remote = session.remote_description ? session.remote_description.sdp : null;
+	var uses_rfc2833 = remote && remote.indexOf('a=rtpmap:98') !== -1;
+	console.log('flush_dtmf_buffer: Using', uses_rfc2833 ? 'RFC 2833' : 'SIP INFO');
+	
+	if (uses_rfc2833) {
+		// RFC 2833 - use SIP.js built-in sequence sending with inter-tone gap
+		// duration: how long each tone lasts (ms)
+		// interToneGap: delay between tones (ms) - must be > 0 for sequence
+		session.dtmf(digits, {
+			duration: 100,          // 100ms tone duration
+			interToneGap: 100      // 100ms between tones (faster than 3000ms timeout)
+		});
+	} else {
+		// SIP INFO - each digit needs its own request, send as sequence
+		// SIP.js 0.7.8 handles multi-character string by sending each as separate INFO
+		session.dtmf(digits, {
+			duration: 100           // Duration per tone
+		});
+	}
+	
+	console.log('flush_dtmf_buffer: Started sending sequence');
+}
+
 document.addEventListener('keydown', function(e) {
 	if (!document.getElementById('destination')) {
 		return;
 	}
 
+	// Handle DTMF keypad input when keypad is shown during call
+	if (dtmf_keypad_shown) {
+		if (e.key >= '0' && e.key <= '9' || e.key === '*' || e.key === '#') {
+			e.preventDefault();
+			send_dtmf(e.key);
+			return;
+		}
+		
+		if (e.key === 'Backspace' || e.key === 'Delete') {
+			e.preventDefault();
+			// Clear the visual display of last digit
+			var display = document.getElementById('dtmf_destination');
+			if (display) {
+				display.value = display.value.slice(0, -1);
+			}
+			return;
+		}
+		
+		// Pressing Enter on DTMF keypad does nothing specific
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			return;
+		}
+		
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			show_dialpad();
+			return;
+		}
+	}
+
+	// Regular dialpad input (not in DTMF keypad mode)
 	if (e.key >= '0' && e.key <= '9') {
 		e.preventDefault();
 		digit_add(e.key);
