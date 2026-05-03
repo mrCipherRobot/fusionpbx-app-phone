@@ -204,6 +204,9 @@ let dtmf_keypad_shown = false;  // Track if DTMF keypad is visible
 let dtmf_display_timer = null;  // Timer for clearing DTMF display
 let dtmf_flush_timer = null;  // Timer for auto-flushing DTMF buffer
 let dtmf_buffer = '';  // Buffer for DTMF digits (to send as batch)
+let is_screen_sharing = false;  // Track if screen sharing is active
+let screen_share_stream = null;  // Store the screen share stream
+let original_video_track = null;  // Store original camera video track for restoration
 
 function stop_call_tone() {
 	const ringtone = document.getElementById('ringtone');
@@ -370,6 +373,24 @@ function sync_call_action_controls() {
 		}
 		action_video_mute.classList.toggle('action_item_toggle_active', local_video_hidden);
 	}
+
+	// Screen share button state
+	var action_screen_share = document.getElementById('action_screen_share');
+	var action_screen_share_icon = document.getElementById('action_screen_share_icon');
+	var action_screen_share_label = document.getElementById('action_screen_share_label');
+	if (action_screen_share && action_screen_share_icon && action_screen_share_label) {
+		if (is_screen_sharing) {
+			action_screen_share_icon.className = 'fas fa-stop';
+			action_screen_share_label.textContent = 'Stop';
+			action_screen_share.classList.add('action_item_toggle_active');
+			action_screen_share.classList.add('action_item_share_active');
+		} else {
+			action_screen_share_icon.className = 'fas fa-desktop';
+			action_screen_share_label.textContent = 'Share';
+			action_screen_share.classList.remove('action_item_toggle_active');
+			action_screen_share.classList.remove('action_item_share_active');
+		}
+	}
 }
 
 function set_call_action_mode(enabled, use_video) {
@@ -378,10 +399,11 @@ function set_call_action_mode(enabled, use_video) {
 	var action_mute = document.getElementById('action_mute');
 	var action_hold = document.getElementById('action_hold');
 	var action_video_mute = document.getElementById('action_video_mute');
+	var action_screen_share = document.getElementById('action_screen_share');
 	var action_transfer = document.getElementById('action_transfer');
 	var action_keypad = document.getElementById('action_keypad');
 	var action_keypad_during_call = document.getElementById('action_keypad_during_call');
-	
+
 	if (action_mute) {
 		action_mute.style.display = enabled ? 'flex' : 'none';
 	}
@@ -390,6 +412,10 @@ function set_call_action_mode(enabled, use_video) {
 	}
 	if (action_video_mute) {
 		action_video_mute.style.display = enabled && use_video ? 'flex' : 'none';
+	}
+	if (action_screen_share) {
+		// Screen share button only shown during video calls
+		action_screen_share.style.display = enabled && use_video ? 'flex' : 'none';
 	}
 	if (action_transfer) {
 		action_transfer.style.display = enabled ? 'flex' : 'none';
@@ -436,6 +462,180 @@ function toggle_video_mute_action() {
 
 	local_video_wrapper.classList.toggle('local_preview_hidden');
 	sync_call_action_controls();
+}
+
+// Toggle screen sharing - starts or stops screen share stream
+async function toggle_screen_share() {
+	if (!session || !active_call_is_video) {
+		console.log('toggle_screen_share: No active video call');
+		return;
+	}
+
+	if (is_screen_sharing) {
+		// Stop screen sharing
+		stop_screen_share();
+	} else {
+		// Start screen sharing
+		start_screen_share();
+	}
+}
+
+// Start screen sharing using getDisplayMedia API
+async function start_screen_share() {
+	try {
+		console.log('start_screen_share: Initiating screen share...');
+
+		// Check if getDisplayMedia is supported
+		if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+			alert('Screen sharing is not supported in this browser.\n\nPlease use Chrome, Edge, or Firefox.\n\nMake sure you are accessing this page via HTTPS.');
+			return;
+		}
+
+		// Get screen share stream
+		screen_share_stream = await navigator.mediaDevices.getDisplayMedia({
+			video: {
+				cursor: "if-supported",
+				width: { ideal: 1280 },
+				height: { ideal: 720 },
+				frameRate: { ideal: 30 }
+			}
+		});
+
+		if (screen_share_stream.getVideoTracks().length === 0) {
+			console.log('start_screen_share: No video tracks in screen share stream');
+			if (screen_share_stream) {
+				screen_share_stream.getTracks().forEach(track => track.stop());
+			}
+			return;
+		}
+
+		// Get the screen share video track
+		var screen_share_video_track = screen_share_stream.getVideoTracks()[0];
+
+		// Store original camera stream for restoration
+		if (session && session.mediaHandler && session.mediaHandler.localStream) {
+			original_video_track = session.mediaHandler.localStream.getVideoTracks()[0];
+			console.log('start_screen_share: Stored original video track:', original_video_track.id);
+		}
+
+		// Add screen share indicator to local video
+		var local_video_wrapper = document.getElementById('local_video_wrapper');
+		if (local_video_wrapper) {
+			local_video_wrapper.classList.add('is_screen_sharing');
+		}
+
+		// Set is_screen_sharing flag
+		is_screen_sharing = true;
+
+		// REPLACE camera video with screen share in peer connection
+		var peer_connection = session ? session.mediaHandler ? session.mediaHandler.peerConnection : null : null;
+		if (peer_connection) {
+			console.log('start_screen_share: Replacing camera track with screen share track');
+
+			// Find the sender sending the camera video track
+			var senders = peer_connection.getSenders();
+			var camera_sender = null;
+			camera_sender = senders.find(function(sender) {
+				return sender.track && sender.track.kind === 'video';
+			});
+
+			if (camera_sender) {
+				console.log('start_screen_share: Found camera sender:', camera_sender);
+				// Replace the camera track with the screen share track
+				camera_sender.replaceTrack(screen_share_video_track).then(function() {
+					console.log('start_screen_share: Track replaced successfully');
+				}).catch(function(err) {
+					console.error('start_screen_share: Error replacing track:', err);
+				});
+			} else {
+				console.error('start_screen_share: No camera sender found in peer connection');
+			}
+		} else {
+			console.error('start_screen_share: No peer connection found!');
+		}
+
+		// Replace local video preview with screen share
+		var local_video = document.getElementById('local_video');
+		if (local_video) {
+			local_video.srcObject = screen_share_stream;
+		}
+
+		// Update action bar icon
+		sync_call_action_controls();
+
+		console.log('start_screen_share: Screen sharing started');
+
+		// Listen for user stopping screen share from browser (closing screen share tab/window)
+		screen_share_video_track.onended = function() {
+			console.log('start_screen_share: Screen share stopped by user (track ended)');
+			stop_screen_share();
+		};
+
+	} catch (err) {
+		console.error('start_screen_share: Failed to start screen share:', err);
+		if (err.name === 'NotAllowedError') {
+			alert('Screen sharing was denied.\n\nPlease allow screen sharing when prompted by your browser.');
+		} else {
+			alert('Failed to start screen sharing: ' + err.message);
+		}
+	}
+}
+
+// Stop screen sharing - restore camera video
+function stop_screen_share() {
+	console.log('stop_screen_share: Stopping screen share...');
+
+	// Get the screen share video track if it exists
+	var screen_share_video_track = null;
+	if (screen_share_stream && screen_share_stream.getVideoTracks().length > 0) {
+		screen_share_video_track = screen_share_stream.getVideoTracks()[0];
+	}
+
+	// Remove screen share track from peer connection
+	var peer_connection = session ? session.mediaHandler ? session.mediaHandler.peerConnection : null : null;
+	if (peer_connection && screen_share_video_track) {
+		console.log('stop_screen_share: Removing screen share track from peer connection');
+		var sender = peer_connection.getSenders().find(function(s) {
+			return s.track && s.track.id === screen_share_video_track.id;
+		});
+		if (sender) {
+			sender.replaceTrack(original_video_track).then(function() {
+				console.log('stop_screen_share: Track replaced successfully');
+			}).catch(function(err) {
+				console.error('stop_screen_share: Error replacing track:', err);
+			});
+		} else {
+			console.error('stop_screen_share: Track sender not found in peer connection');
+		}
+	}
+
+	is_screen_sharing = false;
+
+	// Stop screen share tracks
+	if (screen_share_stream) {
+		screen_share_stream.getTracks().forEach(track => track.stop());
+		screen_share_stream = null;
+	}
+
+	// Restore original camera video to preview
+	var local_video = document.getElementById('local_video');
+	if (local_video) {
+		if (session && session.mediaHandler && session.mediaHandler.localStream) {
+			local_video.srcObject = session.mediaHandler.localStream;
+		}
+	}
+	var local_video_wrapper = document.getElementById('local_video_wrapper');
+	if (local_video_wrapper) {
+		local_video_wrapper.classList.remove('is_screen_sharing');
+	}
+
+	// Clear stored reference
+	original_video_track = null;
+
+	// Update action bar icon
+	sync_call_action_controls();
+
+	console.log('stop_screen_share: Screen sharing stopped');
 }
 
 function apply_video_fit_layout() {
@@ -734,7 +934,7 @@ function add_message(partner_number, message_text, direction, timestamp) {
 		timestamp: timestamp
 	};
 	messages.push(msg);
-	
+
 	// Keep only last 1000 messages
 	if (messages.length > 1000) {
 		messages = messages.slice(messages.length - 1000);
@@ -746,7 +946,7 @@ function add_message(partner_number, message_text, direction, timestamp) {
 function get_conversations() {
 	var messages = get_messages();
 	var partners = {};
-	
+
 	messages.forEach(function(msg) {
 		if (!partners[msg.partner_number]) {
 			partners[msg.partner_number] = {
@@ -764,7 +964,7 @@ function get_conversations() {
 			partners[msg.partner_number].unread_count++;
 		}
 	});
-	
+
 	// Convert to array and sort by last message time
 	var conversations = Object.values(partners);
 	conversations.sort(function(a, b) {
@@ -900,38 +1100,38 @@ user_agent.on('message', function (message) {
 	var sender_name = message.remoteIdentity ? message.remoteIdentity.displayName : '';
 	var sender_number = message.remoteIdentity ? message.remoteIdentity.uri.user : '';
 	var partner_number = sender_number || sender_name || 'Unknown';
-	
+
 	// Extract message body - message.body is the raw string content
 	var message_body = message.body || '';
-	
+
 	// Log for debugging
 	console.log('Received SIP MESSAGE:');
 	console.log('  Partner:', partner_number);
 	console.log('  Body:', message_body);
 	console.log('  Message object:', message);
-	
+
 	// Verify we have valid data
 	if (!message_body || message_body.trim() === '') {
 		console.log('Warning: Empty message body received');
 		return;
 	}
-	
+
 	// Save to local storage
 	add_message(partner_number, message_body.trim(), 'incoming', Date.now());
-	
+
 	// Update UI if on messages tab
 	if (document.getElementById('messages').style.display === 'flex') {
 		render_conversations();
 	}
-	
+
 	// If in an active conversation with this partner, refresh the view
-	if (document.getElementById('conversation').style.display === 'flex' && 
+	if (document.getElementById('conversation').style.display === 'flex' &&
 	    current_conversation_partner === partner_number) {
 		render_conversation(partner_number);
 	}
-	
+
 	// Show notification if not in messages
-	if (document.getElementById('messages').style.display !== 'flex' && 
+	if (document.getElementById('messages').style.display !== 'flex' &&
 	    document.getElementById('conversation').style.display !== 'flex') {
 		show_temporary_status('New message from ' + partner_number, 'fas fa-comment');
 	}
@@ -1416,10 +1616,10 @@ function unmute_video(destination) {
 function transfer_call(target_number) {
 	if (!session) { return; }
 	if (!target_number || target_number.trim() === '') { return; }
-	
+
 	// Create REFER request to transfer current call
 	var refer_to = 'sip:' + target_number.trim() + '@' + '<?php echo $domain_name; ?>';
-	
+
 	// Use session.refer() if available, otherwise use session.ua.request()
 	if (session.refer) {
 		session.refer(refer_to).send();
@@ -1433,13 +1633,13 @@ function transfer_call(target_number) {
 // Show transfer dialog/prompt
 function show_transfer_prompt() {
 	if (!session) { return; }
-	
+
 	// Get current destination value
 	var current_value = document.getElementById('destination').value || '';
-	
+
 	// Use a custom prompt for transfer
 	var transfer_number = prompt('Enter extension/number to transfer to:', current_value);
-	
+
 	if (transfer_number && transfer_number.trim() !== '') {
 		transfer_call(transfer_number);
 	}
@@ -1465,40 +1665,40 @@ function send_message(partner_number, message_text) {
 		console.log('send_message: Invalid message text');
 		return false;
 	}
-	
+
 	var target_uri = 'sip:' + partner_number.trim() + '@' + '<?php echo $domain_name; ?>';
 	var body = message_text.trim();
-	
+
 	console.log('send_message: Sending to', target_uri, 'body:', body);
 	console.log('send_message: User agent object:', user_agent);
 	console.log('send_message: User agent methods:', Object.keys(user_agent));
-	
+
 	// Use SIP.UA to send MESSAGE - correct syntax for sipjs 0.7.8
 	// UA.prototype.message(target, body, options)
 	var msg = user_agent.message(target_uri, body);
-	
+
 	console.log('send_message: Message object created:', msg);
 	console.log('send_message: Message type:', typeof msg);
 	console.log('send_message: Message methods:', msg ? Object.keys(msg) : 'null');
-	
+
 	// Set up response handlers BEFORE sending
 	if (msg) {
 		msg.on('accepted', function(response) {
 			console.log('send_message: Message accepted (200 OK)', response);
 		});
-		
+
 		msg.on('failed', function(data) {
 			console.log('send_message: Message failed to send', data);
 		});
-		
+
 		msg.on('rejected', function(response) {
 			console.log('send_message: Message rejected:', response ? response.status_code : 'unknown', response);
 		});
-		
+
 		msg.on('progress', function(data) {
 			console.log('send_message: Progress:', data);
 		});
-		
+
 		// Send the message
 		console.log('send_message: Calling msg.send()...');
 		msg.send();
@@ -1507,10 +1707,10 @@ function send_message(partner_number, message_text) {
 		console.log('send_message: ERROR - msg object is null!');
 		return false;
 	}
-	
+
 	// Save as outgoing message optimistically
 	add_message(partner_number, message_text.trim(), 'outgoing', Date.now());
-	
+
 	return true;
 }
 
@@ -1518,19 +1718,19 @@ function send_message(partner_number, message_text) {
 function send_current_message() {
 	var input = document.getElementById('message_input');
 	if (!input) return;
-	
+
 	var message_text = input.value.trim();
 	if (!message_text || !current_conversation_partner) {
 		return;
 	}
-	
+
 	// Send the message
 	send_message(current_conversation_partner, message_text);
-	
+
 	// Clear input and focus
 	input.value = '';
 	input.focus();
-	
+
 	// Refresh conversation view
 	render_conversation(current_conversation_partner);
 }
@@ -1542,7 +1742,7 @@ function open_conversation(partner_number) {
 	document.getElementById('conversation').style.display = 'flex';
 	update_action_bar_state('conversation');
 	render_conversation(partner_number);
-	
+
 	// Clear input and focus
 	var input = document.getElementById('message_input');
 	if (input) {
@@ -1564,22 +1764,22 @@ function render_conversations() {
 	var container = document.getElementById('messages_list');
 	if (!container) return;
 	container.innerHTML = '';
-	
+
 	var conversations = get_conversations();
-	
+
 	if (conversations.length === 0) {
 		container.innerHTML = '<div style="text-align: center; color: #ccc; padding: 40px; font-size: 16px;">No messages yet</div>';
 		return;
 	}
-	
+
 	conversations.forEach(function(conv) {
 		var convDiv = document.createElement('div');
 		convDiv.className = 'message_conversation_item';
 		convDiv.onclick = function() { open_conversation(conv.number); };
-		
+
 		var preview = format_message_preview(conv.last_message);
 		var time_str = format_message_time(conv.last_timestamp);
-		
+
 		var html = '<div class="conv_icon">';
 		html += '<i class="fas fa-user"></i>';
 		html += '</div>';
@@ -1590,7 +1790,7 @@ function render_conversations() {
 		html += '<div class="conv_meta">';
 		html += '<div class="conv_time">' + time_str + '</div>';
 		html += '</div>';
-		
+
 		convDiv.innerHTML = html;
 		container.appendChild(convDiv);
 	});
@@ -1601,30 +1801,30 @@ function render_conversation(partner_number) {
 	var messages_container = document.getElementById('messages_container');
 	var title_element = document.getElementById('conversation_title');
 	if (!messages_container || !title_element) return;
-	
+
 	// Set title
 	title_element.textContent = partner_number;
-	
+
 	// Get and render messages
 	var messages = get_conversation_messages(partner_number);
 	messages_container.innerHTML = '';
-	
+
 	if (messages.length === 0) {
 		messages_container.innerHTML = '<div style="text-align: center; color: #ccc; padding: 40px; font-size: 16px;">No messages yet. Start the conversation!</div>';
 		return;
 	}
-	
+
 	messages.forEach(function(msg) {
 		var msgDiv = document.createElement('div');
 		msgDiv.className = 'message_bubble ' + (msg.direction === 'outgoing' ? 'outgoing' : 'incoming');
-		
+
 		var bubble_content = '<div class="bubble_text">' + sanitize_string(msg.text) + '</div>';
 		bubble_content += '<div class="bubble_time">' + format_message_time(msg.timestamp) + '</div>';
-		
+
 		msgDiv.innerHTML = bubble_content;
 		messages_container.appendChild(msgDiv);
 	});
-	
+
 	// Scroll to bottom
 	messages_container.scrollTop = messages_container.scrollHeight;
 }
@@ -1662,7 +1862,7 @@ function show_dtmf_keypad() {
 	if (!is_session_active()) {
 		return;
 	}
-	
+
 	hide_all_panels();
 	document.getElementById('dtmf_keypad').style.display = 'flex';
 	document.getElementById('dtmf_destination').value = '';
@@ -1674,15 +1874,15 @@ function show_keypad() {
 	if (!is_session_active()) {
 		return;
 	}
-	
+
 	var dtmf_keypad = document.getElementById('dtmf_keypad');
-	
+
 	if (dtmf_keypad_shown && dtmf_keypad.style.display === 'flex') {
 		// Hide DTMF keypad, show active call panel
 		dtmf_keypad.style.display = 'none';
 		dtmf_keypad_shown = false;
 		document.getElementById('active').style.display = 'grid';
-		
+
 		// Switch action bar icons back to dialpad
 		document.getElementById('action_keypad').style.display = 'flex';
 		document.getElementById('action_keypad_during_call').style.display = 'none';
@@ -1697,22 +1897,22 @@ function send_dtmf(digit) {
 	if (!session || session_hungup) {
 		return;
 	}
-	
+
 	// Check if session is in CONFIRMED or ANSWERED state
 	if (session.status !== SIP.Session.C.STATUS_CONFIRMED && session.status !== SIP.Session.C.STATUS_ANSWERED) {
 		return;
 	}
-	
+
 	// Add digit to buffer
 	dtmf_buffer += digit;
 	console.log('send_dtmf: Buffered digit:', digit, '| Buffer:', dtmf_buffer);
-	
+
 	// Visual feedback: add digit to display
 	var display = document.getElementById('dtmf_destination');
 	if (display) {
 		display.value += digit;
 	}
-	
+
 	// Highlight pressed key
 	var keys = document.querySelectorAll('.dialpad_box.dtmf_digit');
 	keys.forEach(function(key) {
@@ -1722,7 +1922,7 @@ function send_dtmf(digit) {
 			setTimeout(function() { key.classList.remove('dtmf_pressed'); }, 150);
 		}
 	});
-	
+
 	// Auto-flush buffer after 2000ms of inactivity (user has 2 seconds to enter digits)
 	if (dtmf_flush_timer) {
 		clearTimeout(dtmf_flush_timer);
@@ -1746,18 +1946,18 @@ function flush_dtmf_buffer() {
 	if (!dtmf_buffer || !session || session_hungup) {
 		return;
 	}
-	
+
 	// Ensure session is still active
 	if (session.status !== SIP.Session.C.STATUS_CONFIRMED && session.status !== SIP.Session.C.STATUS_ANSWERED) {
 		dtmf_buffer = '';
 		return;
 	}
-	
+
 	var digits = dtmf_buffer;
 	dtmf_buffer = '';  // Clear buffer immediately
-	
+
 	console.log('flush_dtmf_buffer: Sending FULL sequence:', digits);
-	
+
 	// Clear display after a short delay so user can see what they entered
 	var display = document.getElementById('dtmf_destination');
 	if (display) {
@@ -1767,12 +1967,12 @@ function flush_dtmf_buffer() {
 			}
 		}, 500);
 	}
-	
+
 	// Check if RFC 2833 is available
 	var remote = session.remote_description ? session.remote_description.sdp : null;
 	var uses_rfc2833 = remote && remote.indexOf('a=rtpmap:98') !== -1;
 	console.log('flush_dtmf_buffer: Using', uses_rfc2833 ? 'RFC 2833' : 'SIP INFO');
-	
+
 	if (uses_rfc2833) {
 		// RFC 2833 - use SIP.js built-in sequence sending with inter-tone gap
 		// duration: how long each tone lasts (ms)
@@ -1788,7 +1988,7 @@ function flush_dtmf_buffer() {
 			duration: 100           // Duration per tone
 		});
 	}
-	
+
 	console.log('flush_dtmf_buffer: Started sending sequence');
 }
 
@@ -1804,7 +2004,7 @@ document.addEventListener('keydown', function(e) {
 			send_dtmf(e.key);
 			return;
 		}
-		
+
 		if (e.key === 'Backspace' || e.key === 'Delete') {
 			e.preventDefault();
 			// Clear the visual display of last digit
@@ -1814,13 +2014,13 @@ document.addEventListener('keydown', function(e) {
 			}
 			return;
 		}
-		
+
 		// Pressing Enter on DTMF keypad does nothing specific
 		if (e.key === 'Enter') {
 			e.preventDefault();
 			return;
 		}
-		
+
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			show_dialpad();
